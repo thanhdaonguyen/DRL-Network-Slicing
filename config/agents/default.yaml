@@ -1,0 +1,183 @@
+# CONFIGURATION FOR MULTI-AGENT REINFORCEMENT LEARNING
+
+# Agent architecture type
+agent_type: "maddpg"              # "maddpg", "mappo", "maa2c", "coma"
+
+# Observation-action space configuration of Actor Agents
+observation_dim: 98
+action: 31
+
+# MADDPG specific parameters
+maddpg:
+  # Actor network
+  actor_lr: 3e-4
+  actor_layers: [256, 256, 128]
+  actor_activation: "relu"
+  actor_batch_norm: false
+  
+  # Critic network
+  critic_lr: 3e-4  
+  critic_layers: [512, 256, 128]
+  critic_activation: "relu"
+  critic_batch_norm: false
+  
+  # Target networks
+  target_update_freq: 1           # Update target networks every N steps
+  soft_update_tau: 0.005          # Soft update coefficient
+  
+  # Training parameters
+  warmup_steps: 1000              # Steps before training starts
+  train_freq: 1                   # Training frequency (steps)
+  batch_size: 256
+  
+# Multi-head attention parameters (for coordination)
+attention:
+  num_heads: 4
+  head_dim: 64
+  hidden_dim: 256
+  dropout: 0.1
+  
+  # Self-attention for own observations
+  self_attention: true
+  
+  # Cross-attention for neighbor information
+  cross_attention: true
+  
+  # Positional encoding
+  positional_encoding: false
+
+# Graph Neural Network parameters (alternative coordination)
+gnn:
+  node_features: 32
+  edge_features: 16
+  hidden_dim: 128
+  num_layers: 3
+  aggregation: "mean"             # "mean", "max", "sum"
+  message_passing: "gcn"          # "gcn", "gat", "sage"
+
+# Reward shaping for individual agents
+reward_shaping:
+  # Individual reward components
+  individual_qos_weight: 0.6
+  individual_energy_weight: 0.2
+  individual_interference_weight: 0.2
+  
+  # Cooperative reward
+  cooperation_bonus: 0.1
+  
+  # Shaped rewards
+  distance_penalty: 0.01          # Penalty for being far from assigned UEs
+  battery_penalty: 0.05           # Penalty for low battery
+  collision_penalty: 1.0          # Penalty for UAV collisions
+  
+  # Reward normalization
+  normalize_rewards: true
+  reward_scale: 1.0
+
+# Memory and experience replay
+memory:
+  capacity: 100000
+  min_size: 1000
+  
+  # Prioritized experience replay
+  prioritized: false
+  alpha: 0.6                      # Prioritization strength
+  beta: 0.4                       # Importance sampling strength
+  beta_increment: 1e-5
+  
+  # Multi-step returns
+  n_step: 1
+  gamma: 0.99
+
+# Exploration strategies per agent
+exploration:
+  # Noise type
+  noise_type: "gaussian"          # "gaussian", "ou", "parameter"
+  
+  # Gaussian noise
+  gaussian_std: 0.1
+  gaussian_decay: 0.995
+  gaussian_min: 0.01
+  
+  # Ornstein-Uhlenbeck noise
+  ou_theta: 0.15
+  ou_sigma: 0.2
+  ou_mu: 0.0
+  
+  # Parameter noise (for robustness)
+  param_noise_std: 0.01
+  param_noise_adaptation: 1.01
+
+# Agent-specific learning rates (if different)
+agent_specific:
+  # Different learning rates for different agent roles
+  learning_rates:
+    default: 3e-4
+    # coordinator: 1e-4            # If some agents act as coordinators
+    # executor: 5e-4               # If some agents are executors
+  
+  # Different network sizes
+  network_sizes:
+    default: [256, 256, 128]
+    # small: [128, 128, 64]
+    # large: [512, 256, 128]
+
+# Regularization techniques
+regularization:
+  # Weight decay
+  weight_decay: 1e-4
+  
+  # Dropout
+  dropout_rate: 0.1
+  
+  # Batch normalization
+  batch_norm: false
+  
+  # Layer normalization  
+  layer_norm: true
+  
+  # Spectral normalization
+  spectral_norm: false
+  
+  # Gradient clipping
+  grad_clip: 10.0
+
+# Communication between agents (if enabled)
+communication:
+  enabled: false
+  message_dim: 32
+  
+  # Communication network
+  comm_network_layers: [64, 32]
+  comm_activation: "relu"
+  
+  # Communication scheduling
+  comm_frequency: 1               # Communicate every N steps
+  comm_range: 500.0               # Communication range in meters
+  
+  # Message aggregation
+  message_aggregation: "attention"  # "attention", "mean", "max"
+
+# Model saving and loading
+model:
+  save_frequency: 50              # Save every N episodes
+  keep_checkpoints: 5             # Number of recent checkpoints to keep
+  
+  # Model compression
+  quantization: false             # Quantize models for deployment
+  pruning: false                  # Prune less important connections
+  
+  # Model export
+  export_onnx: false              # Export to ONNX format
+  export_torchscript: false       # Export to TorchScript
+
+# Debugging and monitoring
+debug:
+  check_numerical_stability: true
+  log_gradient_norms: false
+  log_action_distributions: false
+  monitor_memory_usage: false
+  
+  # Agent-specific debugging
+  track_individual_performance: true
+  save_agent_trajectories: false

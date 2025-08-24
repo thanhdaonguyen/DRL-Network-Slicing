@@ -1,0 +1,105 @@
+# ENVIRONMENT CONFIGURATION FOR UAV NETWORK SIMULATION
+# ----------------------------------------------------
+
+# Physical entities parameters
+system:
+  num_uavs: 3
+  num_ues: 100
+  service_area: [1000, 1000]  # [width, height] in meters
+  height_range: [100, 500]    # [min, max] height in meters
+  num_das_per_slice: 3
+
+# Time parameters
+time:
+  T_L: 60.0    # Long-term period (seconds)
+  T_S: 0.001   # Short-term period (seconds)
+
+# Channel and propagation parameters
+channel:
+  noise_power: 1e-13              # Watts
+  path_loss_exponent: 2.0
+  carrier_frequency: 2.4e9        # Hz
+  rb_bandwidth: 180e3             # Hz (LTE standard)
+  total_bandwidth: 20e9        # Hz per UAV
+
+# Quality of Service profiles for network slices
+qos_profiles:
+  embb:    # Enhanced Mobile Broadband (slice_type: 1)
+    min_rate: 100e6               # Mbps
+    max_latency: 10.0            # ms
+    min_reliability: 0.99
+  urllc:   # Ultra-Reliable Low-Latency Communications (slice_type: 2)
+    min_rate: 10e6
+    max_latency: 1.0
+    min_reliability: 0.9999
+  mmtc:    # Massive Machine-Type Communications (slice_type: 3)
+    min_rate: 1e6
+    max_latency: 100.0
+    min_reliability: 0.95
+
+# Network slice parameters
+slicing:
+  slice_weights:
+    embb: 0.2
+    urllc: 0.7
+    mmtc: 0.1
+  slice_probabilities:
+    embb: 0.5
+    urllc: 0.3
+    mmtc: 0.2
+
+# UAV constraints and capabilities
+uav_params:
+  max_power: 10.0                 # Watts
+  battery_capacity: 800000.0        # Joules
+  velocity_max: 1.0               # m/s maximum movement speed
+  initial_power: 5.0              # Initial power setting
+  initial_battery: 800000.0         # Initial battery level
+
+# User Equipment dynamics
+ue_dynamics:
+  arrival_rate: 0.1               # New UEs per second
+  departure_rate: 0.08            # Probability of UE leaving per minute
+  max_ues_multiplier: 2.5         # max_ues = num_ues * multiplier
+  session_duration_avg: 300       # Average session duration in seconds
+  max_initial_velocity: 2.0       # m/s
+  patterns:
+    walk:
+      speed: 0.1                  # m/s
+      probability: 0.5
+    vehicle:
+      speed: 1.0                  # m/s
+      probability: 0.3
+    stationary:
+      speed: 0.0                  # m/s
+      probability: 0.2
+  change_direction_prob: 0.3      # Probability of changing direction per large time-scale step
+
+# Distance-based classification thresholds (used for DA formation)
+da_distance_thresholds:
+  near_max: 200.0                 # meters - "Low" SINR level externally
+  medium_max: 400.0               # meters - "Medium" SINR level externally
+                                  # > 400m is "High" SINR level externally
+
+# SINR thresholds for quality assessment
+sinr_thresholds:
+  low_max: 10.0                   # dB
+  medium_max: 20.0                # dB
+                                  # > 20 dB is high quality
+
+# Environment behavior settings
+behavior:
+  print_stats: true               # Print initialization statistics
+  boundary_handling: "bounce"     # How UEs handle boundaries: "bounce", "wrap", "stop"
+  periodic_cleanup: true          # Remove inactive UEs periodically
+
+# Reward function weights
+reward_weights:
+  qos: 0.5                        # QoS satisfaction weight
+  energy: 0.3                     # Energy efficiency weight  
+  interference: 0.2               # Interference penalty weight
+
+# Energy consumption models
+energy_models:
+  movement_energy_factor: 0.1       # Energy per meter of UAV's movement
+  transmission_energy_factor: 1.0    # Base transmission energy multiplier

@@ -1,0 +1,48 @@
+# TRAINING CONFIGURATION FOR MULTI-AGENT REINFORCEMENT LEARNING
+# -------------------------------------------------------------
+
+# Step-based training configuration
+total_training_steps: 100000    # Total training steps instead of episodes
+episode_length: 20000            # Max steps per episode (episodes become segments)
+early_stopping_patience: 5000   # Stop if no improvement for N steps
+early_stopping_threshold: 0.01  # Minimum improvement threshold
+
+# Neural network hyperparameters
+batch_size: 256
+learning_rate_actor: 3e-4
+learning_rate_critic: 3e-4
+gamma: 0.99
+tau: 0.005
+
+# Experience replay
+buffer_size: 200000             # Larger buffer for more steps
+min_buffer_size: 1000
+
+# Exploration strategy
+exploration:
+  strategy: "gaussian_noise"
+  initial_noise: 0.1
+  noise_decay: 0.9999           # Much slower decay for long training
+  min_noise: 0.01
+
+# Step-based logging and checkpointing
+log_interval: 1000              # Steps between logging
+save_interval: 10000            # Steps between model saves
+evaluation_interval: 5000       # Steps between evaluations
+plot_interval: 5000             # Steps between plotting
+
+# Directories
+save_dir: "saved_models"
+log_dir: "logs"
+tensorboard_dir: "runs"
+
+# Evaluation during training
+evaluation:
+  eval_steps: 500               # Steps per evaluation episode
+  eval_episodes: 3              # Number of evaluation episodes
+  save_best_model: true
+
+# Hardware and performance
+hardware:
+  device: "auto"
+  seed: 42
