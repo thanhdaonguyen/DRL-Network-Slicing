@@ -4,7 +4,7 @@
 # Physical entities parameters
 system:
   num_uavs: 3
-  num_ues: 100
+  num_ues: 500
   service_area: [1000, 1000]  # [width, height] in meters
   height_range: [100, 500]    # [min, max] height in meters
   num_das_per_slice: 3
@@ -12,20 +12,20 @@ system:
 # Time parameters
 time:
   T_L: 60.0    # Long-term period (seconds)
-  T_S: 0.001   # Short-term period (seconds)
+  T_S: 0.01   # Short-term period (seconds)
 
 # Channel and propagation parameters
 channel:
   noise_power: 1e-13              # Watts
   path_loss_exponent: 2.0
-  carrier_frequency: 2.4e9        # Hz
-  rb_bandwidth: 180e3             # Hz (LTE standard)
-  total_bandwidth: 20e9        # Hz per UAV
+  carrier_frequency: 3.5e9        # Hz
+  rb_bandwidth: 180e3             # Hz
+  total_bandwidth: 600e6        # Hz per UAV
 
 # Quality of Service profiles for network slices
 qos_profiles:
   embb:    # Enhanced Mobile Broadband (slice_type: 1)
-    min_rate: 100e6               # Mbps
+    min_rate: 100e6               # bps
     max_latency: 10.0            # ms
     min_reliability: 0.99
   urllc:   # Ultra-Reliable Low-Latency Communications (slice_type: 2)
@@ -58,9 +58,9 @@ uav_params:
 
 # User Equipment dynamics
 ue_dynamics:
-  arrival_rate: 0.1               # New UEs per second
+  arrival_rate: 1.5               # New UEs per second
   departure_rate: 0.08            # Probability of UE leaving per minute
-  max_ues_multiplier: 2.5         # max_ues = num_ues * multiplier
+  max_ues_multiplier: 1.5         # max_ues = num_ues * multiplier
   session_duration_avg: 300       # Average session duration in seconds
   max_initial_velocity: 2.0       # m/s
   patterns:

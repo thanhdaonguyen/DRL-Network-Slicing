@@ -217,7 +217,8 @@ class NetworkVisualizer:
             uav_x, uav_y = self.world_to_screen(uav.position[0], uav.position[1])
             
             # Calculate connection quality (based on SINR)
-            sinr = self.env._calculate_sinr(ue.assigned_uav, ue.id)
+            rb = ue.assigned_rb[0] if ue.assigned_rb else None
+            sinr = self.env._calculate_sinr(self.env.ues[ue.id], uav, rb)
             quality = min(1.0, max(0.0, sinr / 20))  # Normalize SINR to 0-1, clamp values
             
             # Connection line with quality-based color (RGB only, no alpha)
@@ -949,13 +950,13 @@ class NetworkVisualizer:
             self.current_metrics = {
                 'qos': info['qos_satisfaction'],
                 'energy': info['energy_efficiency'],
-                'interference': info['interference_level']
+                'interference': info['sinr_level']
             }
             
             # Update history
             self.metrics_history['qos'].append(info['qos_satisfaction'])
             self.metrics_history['energy'].append(info['energy_efficiency'])
-            self.metrics_history['interference'].append(info['interference_level'])
+            self.metrics_history['interference'].append(info['sinr_level'])
             
             # Limit history size
             for key in self.metrics_history:
@@ -1122,7 +1123,7 @@ def main():
     import json
     
     parser = argparse.ArgumentParser(description='UAV Network Slicing Visualizer')
-    parser.add_argument('--checkpoint', type=str, default="./saved_models/model13", help='Path to trained model checkpoint')
+    parser.add_argument('--checkpoint', type=str, default="./saved_models/model14", help='Path to trained model checkpoint')
     
     args = parser.parse_args()
     # Create environment
@@ -1134,7 +1135,7 @@ def main():
 
         # Assume checkpoint is a folder, e.g., model5
         model_dir = args.checkpoint
-        model_checkpoint = os.path.join(model_dir, "checkpoints/checkpoint_step_20000.pth")
+        model_checkpoint = os.path.join(model_dir, "checkpoints/checkpoint_step_30000.pth")
 
         env_config = Configuration("./config/environment/default.yaml")
         # Extract agent config from env_info.json

@@ -275,7 +275,7 @@ class MADRLAgent:
                     action[4:] = bandwidth_part
             
             actions[agent_id] = action
-        
+
         return actions
     
     def store_transition(self, observations: Dict[int, np.ndarray],
@@ -367,7 +367,7 @@ class MADRLAgent:
         
         # Decay exploration noise
         self.exploration_noise = max(self.min_noise, self.exploration_noise * self.noise_decay)
-        print("Actor Loss:", actor_losses, "Critic Loss:", critic_loss)
+        # print("Actor Loss:", actor_losses, "Critic Loss:", critic_loss)
         return {
             'actor_losses': actor_losses,
             'critic_loss': critic_loss.item()

@@ -30,7 +30,6 @@ class TrainingManager:
 
             # Step-based training parameters
             'total_training_steps': train_config.total_training_steps,
-            'episode_length': train_config.episode_length,
             'batch_size': train_config.batch_size,
             'learning_rate_actor': train_config.learning_rate_actor,
             'learning_rate_critic': train_config.learning_rate_critic,
@@ -54,6 +53,9 @@ class TrainingManager:
             'train_config_path': train_config_path
         }
 
+        # Initialize environment and agent
+        self.env = NetworkSlicingEnv(config_path=self.config['env_config_path'])
+
         # Create directories
         os.makedirs(self.config['save_dir'], exist_ok=True)
         os.makedirs(self.config['log_dir'], exist_ok=True)
@@ -70,21 +72,28 @@ class TrainingManager:
             'rewards': [],
             'qos_satisfaction': [],
             'energy_efficiency': [],
-            'interference_level': [],
+            'sinr_level': [],
             'active_ues': [],
+            'noise': [],
             'actor_losses': [],
-            'critic_losses': []
-        }
-        
-        self.episode_metrics = {
-            'episode_rewards': [],
-            'episode_lengths': [],
-            'episode_numbers': [],
-            'episode_steps': []  # Global step when episode ended
+            'critic_losses': [],
         }
 
-        # Initialize environment and agent
-        self.env = NetworkSlicingEnv(config_path=self.config['env_config_path'])
+        # Initialize per-agent action metrics
+        for i in range(self.config['num_uavs']):
+            self.step_metrics[f'agent_{i}_pos_x'] = []
+            self.step_metrics[f'agent_{i}_pos_y'] = []
+            self.step_metrics[f'agent_{i}_pos_z'] = []
+            self.step_metrics[f'agent_{i}_power'] = []
+            for j in range(int(len(self.env.demand_areas) / self.config['num_uavs'])):
+                self.step_metrics[f'agent_{i}_da_{j}'] = []
+
+        # Initialize per-agent RB allocation metrics
+        for i in range(self.config['num_uavs']):
+            self.step_metrics[f'agent_{i}_rb_allocation_ratio'] = []
+
+
+
         
         # Get observation and action dimensions
         obs_sample = self.env.reset()
@@ -116,42 +125,16 @@ class TrainingManager:
             next_num += 1
         return os.path.join(save_dir, f"model{next_num}")
 
-    def _save_env_info(self):
-        """Save environment configuration to the model directory"""
-        # Get obs_dim and action_dim
-        sample_obs = self.env.reset()
-        obs_dim = sample_obs[0].shape[0]
-        action_dim = 4 + self.config['num_das_per_slice'] * 3  # position(3) + power(1) + bandwidth allocation
-
-        env_info = {
-            'num_uavs': self.config['num_uavs'],
-            'num_ues': self.config['num_ues'],
-            'service_area': self.config['service_area'],
-            'height_range': self.config['height_range'],
-            'num_das_per_slice': self.config['num_das_per_slice'],
-            'obs_dim': obs_dim,
-            'action_dim': action_dim,
-            'config': self.config
-        }
-        env_info_path = os.path.join(self.model_dir, 'env_info.json')
-        with open(env_info_path, 'w') as f:
-            json.dump(env_info, f, indent=2)
-
     def train(self):
+
         """Step-based training loop with comprehensive logging"""
         print(f"Starting step-based training for {self.config['total_training_steps']} steps")
-        print(f"Episode length: {self.config['episode_length']} steps")
         
         # Initialize environment
         observations = self.env.reset()
         
-        # Training state variables
-        episode_count = 0
-        current_episode_reward = 0
-        current_episode_steps = 0
-        best_eval_reward = float('-inf')
-        
         # Main training loop
+        # In this simulation, each training step corresponds to one large time step
         progress_bar = tqdm(range(self.config['total_training_steps']), desc="Training Steps")
         
         for global_step in progress_bar:
@@ -172,62 +155,37 @@ class TrainingManager:
                 train_info = self.agent.train()
             
             # Store step metrics
-            self._store_step_metrics(global_step, reward, info, train_info)
+            self._store_step_metrics(global_step, actions, reward, info, train_info)
             
             # Update state
             observations = next_observations
-            current_episode_reward += reward
-            current_episode_steps += 1
-            
-            # Handle episode termination
-            if done or current_episode_steps >= self.config['episode_length']:
-                self._handle_episode_completion(
-                    episode_count, current_episode_reward, 
-                    current_episode_steps, global_step
-                )
-                
-                # Reset for new episode
-                observations = self.env.reset()
-                episode_count += 1
-                current_episode_reward = 0
-                current_episode_steps = 0
             
             # Periodic operations
             if global_step % self.config['log_interval'] == 0 and global_step > 0:
                 self._log_step_progress(global_step, progress_bar)
-            
-            if global_step % self.config['evaluation_interval'] == 0 and global_step > 0:
-                eval_reward = self._evaluate_agent(global_step)
-                if eval_reward > best_eval_reward:
-                    best_eval_reward = eval_reward
-                    self._save_best_model(global_step)
             
             if global_step % self.config['save_interval'] == 0 and global_step > 0:
                 self._save_checkpoint(global_step)
             
             if global_step % self.config['plot_interval'] == 0 and global_step > 0:
                 self._plot_training_progress(global_step)
-            
-            # Decay exploration noise
-            if hasattr(self.agent, 'exploration_noise'):
-                self.agent.exploration_noise = max(
-                    self.agent.min_noise,
-                    self.agent.exploration_noise * self.agent.noise_decay
-                )
+                self._save_metrics_to_csv()
+        
         
         # Final operations
         self._save_checkpoint(self.config['total_training_steps'])
         self._plot_final_results()
         print("Training completed!")
 
-    def _store_step_metrics(self, step, reward, info, train_info):
+    def _store_step_metrics(self, step, actions, reward, info, train_info):
         """Store metrics for this step"""
         self.step_metrics['steps'].append(step)
         self.step_metrics['rewards'].append(reward)
         self.step_metrics['qos_satisfaction'].append(info['qos_satisfaction'])
         self.step_metrics['energy_efficiency'].append(info['energy_efficiency'])
-        self.step_metrics['interference_level'].append(info['interference_level'])
+        self.step_metrics['sinr_level'].append(info['sinr_level'])
         self.step_metrics['active_ues'].append(info['active_ues'])
+        self.step_metrics['noise'].append(getattr(self.agent, 'exploration_noise', 0))
         
         # Store training metrics if available
         if train_info:
@@ -242,15 +200,24 @@ class TrainingManager:
             self.step_metrics['actor_losses'].append(0)
             self.step_metrics['critic_losses'].append(0)
 
-    def _handle_episode_completion(self, episode_num, episode_reward, episode_steps, global_step):
-        """Handle episode completion"""
-        self.episode_metrics['episode_rewards'].append(episode_reward)
-        self.episode_metrics['episode_lengths'].append(episode_steps)
-        self.episode_metrics['episode_numbers'].append(episode_num)
-        self.episode_metrics['episode_steps'].append(global_step)
-        
-        print(f"\nEpisode {episode_num} completed at step {global_step}")
-        print(f"Episode length: {episode_steps}, Reward: {episode_reward:.2f}")
+        # Store actions of each agent for analysis if needed
+        for i, action in actions.items():
+            self.step_metrics[f'agent_{i}_pos_x'].append(action[0])
+            self.step_metrics[f'agent_{i}_pos_y'].append(action[1])
+            self.step_metrics[f'agent_{i}_pos_z'].append(action[2])
+            self.step_metrics[f'agent_{i}_power'].append(action[3])
+            for j in range(int(len(self.env.demand_areas) / self.config['num_uavs'])):
+                self.step_metrics[f'agent_{i}_da_{j}'].append(action[4 + j])
+
+        # Store information of RB allocation
+        for i in range(self.config['num_uavs']):
+            num_of_allocated_RBs = 0
+            for rb in self.env.uavs[i].RBs:
+                if rb.allocated_ue_id != -1:
+                    num_of_allocated_RBs += 1
+
+            rb_allocation_ratio = num_of_allocated_RBs / len(self.env.uavs[i].RBs) if self.env.uavs[i].RBs else 0
+            self.step_metrics[f'agent_{i}_rb_allocation_ratio'].append(rb_allocation_ratio)
 
     def _log_step_progress(self, step, progress_bar):
         """Log training progress"""
@@ -268,40 +235,11 @@ class TrainingManager:
             'Noise': f'{getattr(self.agent, "exploration_noise", 0):.4f}'
         })
 
-    def _evaluate_agent(self, step):
-        """Evaluate agent performance without exploration"""
-        print(f"\n--- Evaluation at step {step} ---")
-        
-        total_eval_reward = 0
-        
-        for eval_episode in range(self.config.get('evaluation', {}).get('eval_episodes', 3)):
-            eval_obs = self.env.reset()
-            eval_reward = 0
-            eval_steps = 0
-            
-            for _ in range(self.config.get('evaluation', {}).get('eval_steps', 500)):
-                eval_actions = self.agent.select_actions(eval_obs, explore=False)
-                eval_obs, reward, done, info = self.env.step(eval_actions)
-                eval_reward += reward
-                eval_steps += 1
-                
-                if done:
-                    break
-            
-            total_eval_reward += eval_reward
-            print(f"Eval episode {eval_episode + 1}: {eval_steps} steps, Reward: {eval_reward:.2f}")
-        
-        avg_eval_reward = total_eval_reward / self.config.get('evaluation', {}).get('eval_episodes', 3)
-        print(f"Average evaluation reward: {avg_eval_reward:.2f}")
-        print("--- End Evaluation ---\n")
-        
-        return avg_eval_reward
-
     def _plot_training_progress(self, current_step):
         """Plot comprehensive training progress"""
         import matplotlib.pyplot as plt
         
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        fig, axes = plt.subplots(3, 3, figsize=(18, 10))
         fig.suptitle(f'Training Progress - Step {current_step}', fontsize=16)
         
         steps = self.step_metrics['steps']
@@ -346,28 +284,49 @@ class TrainingManager:
         axes[1, 0].set_ylabel('Number of UEs')
         axes[1, 0].grid(True)
         
-        # Plot 5: Training losses
+        # Plot 5: Actor losses
         if any(loss > 0 for loss in self.step_metrics['actor_losses']):
             axes[1, 1].plot(steps, self.step_metrics['actor_losses'], 'red', alpha=0.6, label='Actor Loss')
-            axes[1, 1].plot(steps, self.step_metrics['critic_losses'], 'blue', alpha=0.6, label='Critic Loss')
-            axes[1, 1].set_title('Training Losses')
+            axes[1, 1].set_title('Actor Losses')
             axes[1, 1].set_xlabel('Steps')
             axes[1, 1].set_ylabel('Loss')
             axes[1, 1].legend()
             axes[1, 1].grid(True)
-        
-        # Plot 6: Episode rewards
-        if self.episode_metrics['episode_rewards']:
-            axes[1, 2].plot(self.episode_metrics['episode_steps'], 
-                        self.episode_metrics['episode_rewards'], 'mo-', alpha=0.7)
-            axes[1, 2].set_title('Episode Rewards')
-            axes[1, 2].set_xlabel('Training Step')
-            axes[1, 2].set_ylabel('Episode Reward')
+
+        # Plot 6: Critic losses
+        if any(loss > 0 for loss in self.step_metrics['critic_losses']):
+            axes[1, 2].plot(steps, self.step_metrics['critic_losses'], 'blue', alpha=0.6, label='Critic Loss')
+            axes[1, 2].set_title('Critic Losses')
+            axes[1, 2].set_xlabel('Steps')
+            axes[1, 2].set_ylabel('Loss')
+            axes[1, 2].legend()
             axes[1, 2].grid(True)
+
+        # Plot 7: Interference Level
+        axes[2, 0].plot(steps, self.step_metrics['sinr_level'], 'brown', alpha=0.6)
+        if len(steps) > 100:
+            smoothed_interference = self._moving_average(self.step_metrics['sinr_level'], 1000)
+            axes[2, 0].plot(steps[-len(smoothed_interference):], smoothed_interference, 'saddlebrown', linewidth=2)
+        axes[2, 0].set_title('Average SINR Level')
+        axes[2, 0].set_xlabel('Steps')
+        axes[2, 0].set_ylabel('Average SINR Level')
+        axes[2, 0].grid(True)
+
+        # Plot 8: Exploration Noise
+        axes[2, 1].plot(steps, self.step_metrics['noise'], 'cyan', alpha=0.6)
+        axes[2, 1].set_title('Exploration Noise')
+        axes[2, 1].set_xlabel('Steps')
+        axes[2, 1].set_ylabel('Noise Level')
+        axes[2, 1].grid(True)
+
+
+
         
         plt.tight_layout()
         plt.savefig(f'{self.model_dir}/training_progress/training_progress_step_{current_step}.png', dpi=150, bbox_inches='tight')
         plt.close()  # Close to save memory
+
+        
 
     def _moving_average(self, data, window_size):
         """Calculate moving average"""
@@ -382,13 +341,6 @@ class TrainingManager:
         if hasattr(self.agent, 'save_models'):
             self.agent.save_models(checkpoint_path)
         print(f"Checkpoint saved at step {step}")
-
-    def _save_best_model(self, step):
-        """Save best performing model"""
-        best_model_path = os.path.join(self.model_dir, 'best_model.pth')
-        if hasattr(self.agent, 'save_models'):
-            self.agent.save_models(best_model_path)
-        print(f"Best model saved at step {step}")
 
     def _plot_final_results(self):
         """Plot comprehensive final results"""
@@ -405,7 +357,7 @@ class TrainingManager:
             ('rewards', 'Reward', 'blue', axes[0, 0]),
             ('qos_satisfaction', 'QoS Satisfaction', 'green', axes[0, 1]),
             ('energy_efficiency', 'Energy Efficiency', 'orange', axes[1, 0]),
-            ('interference_level', 'Interference Level', 'red', axes[1, 1]),
+            ('sinr_level', 'Average SINR Level', 'red', axes[1, 1]),
             ('active_ues', 'Active UEs', 'purple', axes[2, 0])
         ]
         
@@ -418,15 +370,7 @@ class TrainingManager:
             ax.set_title(title)
             ax.set_xlabel('Training Steps')
             ax.grid(True)
-        
-        # Episode summary
-        if self.episode_metrics['episode_rewards']:
-            axes[2, 1].plot(self.episode_metrics['episode_steps'], 
-                        self.episode_metrics['episode_rewards'], 'mo-', alpha=0.7)
-            axes[2, 1].set_title('Episode Rewards')
-            axes[2, 1].set_xlabel('Training Step')
-            axes[2, 1].set_ylabel('Episode Reward')
-            axes[2, 1].grid(True)
+
         
         plt.tight_layout()
         plt.savefig(f'{self.model_dir}/final_training_results.png', dpi=150, bbox_inches='tight')
@@ -443,11 +387,6 @@ class TrainingManager:
         step_df = pd.DataFrame(self.step_metrics)
         step_df.to_csv(f'{self.model_dir}/step_metrics.csv', index=False)
         
-        # Episode-based metrics
-        if self.episode_metrics['episode_rewards']:
-            episode_df = pd.DataFrame(self.episode_metrics)
-            episode_df.to_csv(f'{self.model_dir}/episode_metrics.csv', index=False)
-        
         print(f"Metrics saved to {self.model_dir}")
 def main():
     """Main function to run training"""
@@ -460,9 +399,6 @@ def main():
 
     # Run training
     trainer.train()
-
-    # Plot results
-    trainer.plot_training_results()
 
 if __name__ == "__main__":
     main()

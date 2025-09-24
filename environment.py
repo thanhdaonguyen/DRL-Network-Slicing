@@ -25,10 +25,25 @@ class UAV:
     battery_capacity: float  # Joules
     current_battery: float
     velocity_max: float  # m/s
-    
+    energy_used: float = 0.0  # Joules used in last step
+    RBs: List['ResourceBlock'] = None  # List of ResourceBlocks
+
+    def __post_init__(self):
+        if self.RBs is None:
+            self.RBs = []
+
     def update_position(self, delta_pos: np.ndarray):
         """Update UAV position with velocity constraints"""
         self.position += delta_pos
+
+@dataclass
+class ResourceBlock:
+    """Resource Block allocation"""
+    id: int
+    bandwidth: float  # Hz
+    frequency: Optional[float] = 3.5e6  # Frequency in MHz
+    allocated_ue_id: int = -1  # User Equipment ID
+    allocated_da_id: Optional[int] = -1  # DemandArea ID
 
 @dataclass
 class UE:
@@ -38,11 +53,16 @@ class UE:
     slice_type: str  # embb, urllc, mmtc
     assigned_uav: Optional[int] = None
     assigned_da: Optional[int] = None
+    assigned_rb: List[ResourceBlock] = None
     is_active: bool = True  # NEW: whether UE is currently active
-    velocity: np.ndarray = None  # NEW: velocity vector for movement    
+    velocity: np.ndarray = None  # NEW: velocity vector for movement
+    channel_gain: float = 0.0  # Channel gain to serving UAV
     def __post_init__(self):
         if self.velocity is None:
             self.velocity = np.zeros(3)
+        if self.assigned_rb is None:
+            self.assigned_rb = []
+
     
 @dataclass
 class DemandArea:
@@ -54,6 +74,14 @@ class DemandArea:
     allocated_bandwidth: float = 2.0
     center_position: Optional[np.ndarray] = None
     sinr_level: str = "Medium"  # New field: "Low", "Medium", "High"
+    RB_ids_list: List[int] = None  # List of Resource Block IDs allocated to this Demand Area
+    def __post_init__(self):
+        if self.center_position is None:
+            self.center_position = np.zeros(3)
+        if self.RB_ids_list is None:
+            self.RB_ids_list = []
+
+
 
 class NetworkSlicingEnv:
     """
@@ -103,6 +131,7 @@ class NetworkSlicingEnv:
         self.rb_bandwidth = env_config.channel.rb_bandwidth  # Hz (LTE standard)
         self.total_bandwidth = env_config.channel.total_bandwidth  # Hz per UAV
         self.total_rbs = int(self.total_bandwidth / self.rb_bandwidth)
+        self.carrier_frequency = env_config.channel.carrier_frequency  # Hz
         print(f"Total Resource Blocks per UAV: {self.total_rbs}")
 
         # UAV parameters
@@ -159,8 +188,12 @@ class NetworkSlicingEnv:
                 current_power=self.uav_params.initial_power,
                 battery_capacity=self.uav_params.battery_capacity,  # Joules
                 current_battery=self.uav_params.initial_battery,  # Start fully charged
-                velocity_max=self.uav_params.velocity_max  # m/s
+                velocity_max=self.uav_params.velocity_max,  # m/s
+                energy_used=0.0,
+                RBs=self._create_RBs()
             )
+
+            
         
         # Initialize UEs with random positions and slice types
         self.ues = {}
@@ -183,35 +216,6 @@ class NetworkSlicingEnv:
         self.current_time = 0.0
         return observations
     
-    def _calculate_channel_gain(self, uav_pos: np.ndarray, ue_pos: np.ndarray) -> float:
-        """Calculate channel gain between UAV and UE"""
-        distance = np.linalg.norm(uav_pos - ue_pos)
-        # Free space path loss model
-        wavelength = 3e8 / self.carrier_frequency
-        path_loss = (wavelength / (4 * np.pi * distance)) ** self.path_loss_exponent
-        return path_loss
-    
-    def _calculate_sinr(self, uav_id: int, ue_id: int) -> float:
-        """Calculate SINR for UE from serving UAV"""
-        uav = self.uavs[uav_id]
-        ue = self.ues[ue_id]
-        
-        # Signal power from serving UAV
-        channel_gain = self._calculate_channel_gain(uav.position, ue.position)
-        signal_power = uav.current_power * channel_gain
-        
-        # Interference from other UAVs
-        interference = 0.0
-        for other_uav_id, other_uav in self.uavs.items():
-            if other_uav_id != uav_id:
-                other_gain = self._calculate_channel_gain(other_uav.position, ue.position)
-                interference += other_uav.current_power * other_gain
-        
-        # Calculate SINR
-        sinr = signal_power / (interference + self.noise_power)
-        sinr_db = 10 * np.log10(sinr)  # Convert to dB
-        return sinr_db
-
     def _update_ue_dynamics(self):
         """Update UE positions, handle arrivals/departures"""
         # Reset statistics for this step
@@ -269,6 +273,18 @@ class NetworkSlicingEnv:
             for ue_id in inactive_ues[:len(inactive_ues)//2]:  # Remove half of inactive UEs
                 del self.ues[ue_id]
     
+    def _create_RBs(self) -> List[ResourceBlock]:
+        """Create Resource Blocks for a UAV"""
+        rbs = []
+        for i in range(self.total_rbs):
+            rb = ResourceBlock(
+                id=i, 
+                bandwidth = self.rb_bandwidth,
+                frequency = self.carrier_frequency
+            )
+            rbs.append(rb)
+        return rbs
+
     def _add_new_ue(self):
         """Add a new UE to the network"""
         # Simple random position anywhere in service area
@@ -286,6 +302,7 @@ class NetworkSlicingEnv:
             ["embb", "urllc", "mmtc"],
             p=[self.slice_probs["embb"], self.slice_probs["urllc"], self.slice_probs["mmtc"]]
         )
+
 
 
         # Create new UE
@@ -496,19 +513,14 @@ class NetworkSlicingEnv:
             # Action format: [delta_x, delta_y, delta_h, delta_power, bandwidth_allocation_per_da...]
             # Position update (constrained by velocity)
             delta_pos = action[:3] * uav.velocity_max * self.T_L
-            
-            # delta_pos[0] *= self.service_area[0]
-            # delta_pos[1] *= self.service_area[1]
-            # delta_pos[2] *= (self.height_range[1] - self.height_range[0])
-
-            # print(f"UAV {uav_id} delta_pos: {delta_pos}")
-
+ 
             new_pos = uav.position + delta_pos
             # Constrain to service area
             new_pos[0] = np.clip(new_pos[0], 0, self.service_area[0])
             new_pos[1] = np.clip(new_pos[1], 0, self.service_area[1])
             new_pos[2] = np.clip(new_pos[2], self.height_range[0], self.height_range[1])
             
+
             # Calculate movement energy cost
             movement_distance = np.linalg.norm(delta_pos)
             movement_energy = self.movement_energy_factor * movement_distance  # Simple linear model
@@ -520,7 +532,9 @@ class NetworkSlicingEnv:
             
             # Energy consumption
             transmission_energy = uav.current_power * self.T_L
-            uav.current_battery -= (transmission_energy + movement_energy)
+            uav.energy_used = (transmission_energy + movement_energy)
+            print(f"UAV {uav_id} used energy: {uav.energy_used:.2f} J (Movement: {movement_energy:.2f} J, Transmission: {transmission_energy:.2f} J)")
+            uav.current_battery -= uav.energy_used
             uav.current_battery = max(0, uav.current_battery)
             
             # Bandwidth allocation to DAs
@@ -532,8 +546,32 @@ class NetworkSlicingEnv:
                 
                 for i, da in enumerate(uav_das):
                     da.allocated_bandwidth = bandwidth_fractions[i] * uav.max_bandwidth
-                    # print(f"UAV {uav_id} allocated {da.allocated_bandwidth:.2f} MHz to DA {da.id} (slice {da.slice_type}, SINR {da.sinr_level})")
-        
+
+            # RBs allocation to DAs
+            RB_count = 0
+            for da in uav_das:
+                allocated_band = 0.0
+                while allocated_band < da.allocated_bandwidth and RB_count < self.total_rbs:
+                    rb = uav.RBs[RB_count]
+                    rb.allocated_da_id = da.id
+                    da.RB_ids_list.append(RB_count)
+                    allocated_band += rb.bandwidth
+                    RB_count += 1
+
+            # RBs allocation for UEs
+            # reset assigned RBs at UEs
+            for ue in self.ues.values():
+                ue.assigned_rb = []
+            for da in uav_das:
+                # round-robin allocation among UEs in the DA
+                if len(da.user_ids) == 0 or len(da.RB_ids_list) == 0:
+                    continue
+                for i, rb_id in enumerate(da.RB_ids_list):
+                    ue_id = da.user_ids[i % len(da.user_ids)]
+                    rb = uav.RBs[rb_id]
+                    rb.allocated_ue_id = ue_id
+                    self.ues[ue_id].assigned_rb.append(rb)
+
         # Calculate rewards
         # print(self.demand_areas)
         reward = self._calculate_global_reward()
@@ -556,9 +594,9 @@ class NetworkSlicingEnv:
         observations = self._get_observations()
         
         info = {
-            'qos_satisfaction': self._calculate_qos_satisfaction(),
-            'energy_efficiency': self._calculate_energy_efficiency(),
-            'interference_level': self._calculate_interference_level(),
+            'qos_satisfaction': self._calculate_qos_satisfaction_reward(),
+            'energy_efficiency': self._calculate_energy_consumption_penalty(),
+            'sinr_level': self._calculate_sinr_reward(),
             'active_ues': len([ue for ue in self.ues.values() if ue.is_active]),
             'ue_arrivals': self.stats['arrivals'],
             'ue_departures': self.stats['departures']
@@ -573,60 +611,135 @@ class NetworkSlicingEnv:
         beta = self.reward_weights.energy  # default = 0.3
         gamma = self.reward_weights.interference  # default = 0.2
 
-        qos_reward = self._calculate_qos_satisfaction()
-        energy_penalty = self._calculate_energy_efficiency()
-        interference_penalty = self._calculate_interference_level()
+        qos_reward = self._calculate_qos_satisfaction_reward()
+        energy_penalty = self._calculate_energy_consumption_penalty()
+        sinr_level = self._calculate_sinr_reward()
 
-        # print(f"QoS Satisfaction: {qos_reward:.4f}, Energy Consumption Rate: {energy_penalty:.4f}, Interference Level: {interference_penalty:.4f}")
+        print(f"QoS Satisfaction: {qos_reward:.4f}, Energy Consumption Penalty: {energy_penalty:.4f}, SINR Level: {sinr_level:.4f}")
         
-        reward = alpha * qos_reward - beta * energy_penalty - gamma * interference_penalty
+        reward = alpha * qos_reward - beta * energy_penalty + gamma * sinr_level
         return reward
     
-    def _calculate_qos_satisfaction(self) -> float:
+    def _calculate_qos_satisfaction_reward(self) -> float:
         """Calculate QoS satisfaction across all DAs"""
-        total_satisfaction = 0.0
+
+        # Calculate theoretical max QoS satisfaction
+        total_bandwidth = self.total_bandwidth * self.num_uavs  # Total bandwidth across all UAVs
+        total_min_rate = sum(self.qos_profiles[st].min_rate * len([ue for ue in self.ues.values() if ue.slice_type == st and ue.is_active]) 
+                             for st in self.qos_profiles)
+        theoretical_max_qos = min(total_bandwidth / total_min_rate, 1.0) if total_min_rate > 0 else 1.0
+        print(f"Theoretical Max QoS Satisfaction: {theoretical_max_qos:.4f}")
+
+
+        # QoS in this case is basically just the throughput
+        aggregate_throughput_satisfaction = 0.0
         total_weight = 0.0
-        
+
+
         for da in self.demand_areas.values():
-            # Simple model: satisfaction based on allocated bandwidth vs required
-            num_users = len(da.user_ids)
-            if num_users > 0:
-                qos_profile = self.qos_profiles[da.slice_type]
-                required_bandwidth = num_users * qos_profile.min_rate
-                
-                satisfaction = min(1.0, da.allocated_bandwidth / (required_bandwidth + 1e-8))
-                # print("da:", da.id, "type:", da.slice_type, "satisfaction:", satisfaction, "allocated_bandwidth:", da.allocated_bandwidth, "required_bandwidth:", required_bandwidth, "num_users:", num_users)
-                weight = self.slice_weights[da.slice_type] * num_users
-                
-                total_satisfaction += satisfaction * weight
-                total_weight += weight
-    
-        return total_satisfaction / (total_weight + 1e-8)
-    
-    def _calculate_energy_efficiency(self) -> float:
+            if len(da.user_ids) == 0:
+                continue
+            
+            # Calculate average throughput for UEs in this DA
+            total_throughput_satisfaction = 0.0
+            for ue_id in da.user_ids:
+                ue = self.ues[ue_id]
+                if len(ue.assigned_rb) == 0:
+                    continue
+
+                ue_throughput = 0.0
+                # Sum throughput over all assigned RBs
+                for rb in ue.assigned_rb:
+                    sinr_db = self._calculate_sinr(ue, self.uavs[ue.assigned_uav], rb)
+                    sinr_linear = 10 ** (sinr_db / 10)
+
+                    #Shannon capacity formula: C = B * log2(1 + SINR)
+                    throughput = rb.bandwidth * np.log2(1 + sinr_linear) # in bps
+                    ue_throughput += throughput
+
+                ue_throughput_satisfaction = min(ue_throughput / self.qos_profiles[ue.slice_type].min_rate, 1.0)
+                total_throughput_satisfaction += ue_throughput_satisfaction
+            
+            avg_da_throughput_satisfaction = total_throughput_satisfaction / len(da.user_ids) if len(da.user_ids) > 0 else 0.0
+            
+            # Add up to the aggregate throughput satisfaction weighted by slice importance and number of users
+            slice_weight = self.slice_weights[da.slice_type] * len(da.user_ids)
+            aggregate_throughput_satisfaction += avg_da_throughput_satisfaction * slice_weight
+            total_weight += slice_weight
+
+        return aggregate_throughput_satisfaction / total_weight if total_weight > 0 else 0.0
+
+    def _calculate_energy_consumption_penalty(self) -> float:
         """Calculate normalized energy consumption"""
         total_energy_ratio = 0.0
         
         for uav in self.uavs.values():
-            energy_used = (uav.battery_capacity - uav.current_battery) / uav.battery_capacity
-            total_energy_ratio += energy_used
-        
+            total_energy_ratio += uav.energy_used / (uav.max_power * self.T_L)  # Normalize by max possible energy use in T_L
+
+        # print("Total energy used by all UAVs:", total_energy_ratio)
         return total_energy_ratio / self.num_uavs
     
-    def _calculate_interference_level(self) -> float:
-        """Calculate interference level between UAVs"""
-        total_interference = 0.0
+    def _calculate_sinr_reward(self) -> float:
+        """Calculate interference level among UEs"""
+        count_rbs = 0
+        total_sinr_level = 0.0
+
+        for ue in self.ues.values():
+            if not ue.is_active or ue.assigned_uav is None or len(ue.assigned_rb) == 0:
+                continue
+            
+            for rb in ue.assigned_rb:
+                count_rbs += 1
+                sinr_db = self._calculate_sinr(ue, self.uavs[ue.assigned_uav], rb)
+                total_sinr_level += sinr_db
+        avg_sinr_db = total_sinr_level / count_rbs if count_rbs > 0 else 0.0
+
+        scaled_reward = (avg_sinr_db + 10) / 60  # Scale to [0, 1] for SINR range [-10, 50] dB
+        return avg_sinr_db
+
+    def _calculate_channel_gain(self, receiver: UE, transmitter: UAV, rb: ResourceBlock) -> float:
+        """Calculate channel gain between two devices"""
+        distance = np.linalg.norm(receiver.position - transmitter.position)
+        wavelength = 3e8 / rb.frequency  # Speed of light / frequency
+        path_loss = (wavelength / (4 * np.pi * distance)) ** self.path_loss_exponent
+
+        return path_loss
+
+    def _calculate_sinr(self, receiver: UE, transmitter: UAV, rb: ResourceBlock) -> float:
+        """Calculate SINR for UE from serving UAV"""
+        if rb is None:
+            return 0.0
+        # Signal power from serving UAV
+        signal_power = self._calculate_channel_gain(receiver, transmitter, rb) * transmitter.current_power # in Watts
+
+        # Interference from other UAVs on the same RB
+        interference_power = 0.0
+        for other_uav in self.uavs.values():
+            if other_uav.id != transmitter.id:
+                interference_power += self._calculate_channel_gain(receiver, other_uav, rb) * other_uav.current_power
         
-        for i, uav_i in self.uavs.items():
-            for j, uav_j in self.uavs.items():
-                if i < j:  # Avoid double counting
-                    distance = np.linalg.norm(uav_i.position - uav_j.position)
-                    interference = (uav_i.current_power * uav_j.current_power) / (distance ** 2 + 1)
-                    total_interference += interference
-        
-        # Normalize by maximum possible interference
-        max_interference = (self.num_uavs * (self.num_uavs - 1) / 2) * (10.0 ** 2) / (1)
-        return total_interference / max_interference
+        # SINR calculation (in dB)
+        sinr = signal_power / (interference_power + self.noise_power)
+        sinr_db = 10 * np.log10(sinr + 1e-10)  # in dB
+
+        if sinr_db > 100:
+            print(f"Debug SINR Calculation:")
+            print(f"  UE ID: {receiver.id}")
+            print(f"  Transmitter UAV ID: {transmitter.id}")
+            print(f"  Resource Block: {rb.id}")
+            print(f"  Gain: {self._calculate_channel_gain(receiver, transmitter, rb)}")
+            print(f"  Transmitter Power: {transmitter.current_power} W")
+            print(f"  Signal Power: {signal_power} W")
+            print(f"  Interference Power: {interference_power} W") 
+            print(f"  Noise Power: {self.noise_power} W")
+            print(f"  SINR (dB): {sinr_db}")
+
+        if sinr_db < -10:
+            sinr_db = -10
+        elif sinr_db > 50:
+            sinr_db = 50
+
+        return sinr_db
 
     def _print_statistics(self):
         """Print current statistics of the environment"""
